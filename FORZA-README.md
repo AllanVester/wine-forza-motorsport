@@ -1,8 +1,18 @@
-# WineGDK — Forza Motorsport online
+# Wine (Valve) + WineGDK — Forza Motorsport online
 
-Branch `forza-online`, based on **`b5d23b074cf`** of
-[Weather-OS/WineGDK](https://github.com/Weather-OS/WineGDK) branch `pr60`
-("xgameruntime: Enable xbox live multiplayer in minecraft").
+Branch `forza-online`, based on **ValveSoftware/wine bleeding-edge @
+`9578fa3613f`** (Wine 11.0) — the exact commit GE-Proton pins — with the
+GDK runtime of [Weather-OS/WineGDK](https://github.com/Weather-OS/WineGDK)
+branch `pr60` @ `b5d23b074cf` imported on top (curated to the
+self-contained surface: `dlls/xgameruntime/`, the GDK headers, and the
+widl/winnt.h support changes its C++ sources need).
+
+This repo is the `wine` submodule of
+[AllanVester/proton-ge-custom-forza-motorsport](https://github.com/AllanVester/proton-ge-custom-forza-motorsport):
+because the base is Valve's own tree at GE's pin, GE-Proton's
+`protonprep-valve-staging.sh` (wine-staging + proton patches + hotfixes)
+applies unchanged, and `dlls/xgameruntime` rides along as a new,
+additive DLL.
 
 Everything here was found by measuring against the live Xbox Live / Turn 10
 service, not by reading code and guessing. The evidence for each item —
@@ -29,15 +39,21 @@ One commit, 7 files, +1869/−102, all under `dlls/xgameruntime/`.
 
 ## Building
 
-`winegdkrt.dll` is an **added** DLL, not a replaced Wine builtin, so it is
-version-portable — this tree is Wine 11.8 and the resulting DLL is in daily use
-inside a Wine **11.0** Proton without trouble.
+The normal way to build this tree is a full GE-Proton build of the parent
+repo, which produces `xgameruntime.dll` (PE) and `xgameruntime.so` (unix
+half, needed for the Xodus unix-socket client) alongside everything else.
+
+For a quick standalone build of just the DLL (`xgameruntime.dll` is an
+**added** DLL, not a replaced Wine builtin, so the PE half is
+version-portable — the same code built from Wine 11.8 ran in daily use
+inside a Wine 11.0 Proton without trouble):
 
 ```bash
+autoreconf -f                        # Valve's tree does not commit configure
 mkdir -p build && cd build
 ../configure --enable-win64          # or reuse an existing Wine build tree
-make -j8 dlls/xgameruntime/x86_64-windows/winegdkrt.dll
-cp dlls/xgameruntime/x86_64-windows/winegdkrt.dll \
+make -j8 dlls/xgameruntime/x86_64-windows/xgameruntime.dll
+cp dlls/xgameruntime/x86_64-windows/xgameruntime.dll \
    <proton>/files/lib/wine/x86_64-windows/
 ```
 
@@ -62,11 +78,17 @@ GDK layer. Do not expect this branch alone to be enough.
      **only the PE half** — `bcrypt.so` is a native Linux object and a Proton
      built for the Steam Linux Runtime (`-slr-`) will not load one built against
      your host's libraries.
-   - **#19** `NtAllocateVirtualMemory`'s `type_mask` in
+   - ~~**#19** `NtAllocateVirtualMemory`'s `type_mask` in
      `dlls/ntdll/unix/virtual.c` rejects `MEM_LARGE_PAGES|MEM_PHYSICAL` with
      `STATUS_INVALID_PARAMETER`, so a 14 MB staging pool allocated in a C++
      static constructor is born NULL and unchecked; its first use hits the
-     title's "Out of Memory" handler, which deliberately crashes.
+     title's "Out of Memory" handler, which deliberately crashes.~~ —
+     **FIXED IN THIS BRANCH** (commit "ntdll: accept MEM_LARGE_PAGES and
+     tolerate MEM_PHYSICAL in NtAllocateVirtualMemory"). Also a Wine core
+     fix; upstream it separately. ⚠ It lives in `ntdll.so`, the **unix**
+     half, so unlike #18 it cannot be dropped into an existing `-slr-`
+     Proton at all — it only takes effect in a Proton built from this
+     tree, which is exactly what this repo is for.
    ⚠ These replace Wine **builtins**, so unlike `winegdkrt.dll` they must be
    built from the *same* Wine version as the Proton they ship in — the PE
    `bcrypt.dll` reaches its unix half through a version-specific unixlib enum.
