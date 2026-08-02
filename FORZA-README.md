@@ -51,11 +51,17 @@ GDK layer. Do not expect this branch alone to be enough.
    changes and are not in this repo.
 2. **Two Wine core bugs**, neither GDK-related, both required to get past
    sign-in:
-   - **#18** `BCryptSetProperty(hKey, BCRYPT_INITIALIZATION_VECTOR)` is
-     unimplemented → the title's AES key import fails → **no CMS content is
-     ever decrypted** → `IOSys::FileOpenStatus 7` → an endless "Attempting to
-     reconnect". Fix is one branch in `dlls/bcrypt/bcrypt_main.c` calling the
-     already-present `key_symmetric_set_vector()`.
+   - ~~**#18** `BCryptSetProperty(hKey, BCRYPT_INITIALIZATION_VECTOR)`~~ —
+     **FIXED IN THIS BRANCH** (`dlls/bcrypt/bcrypt_main.c`, commit
+     "bcrypt: implement BCRYPT_INITIALIZATION_VECTOR"). It is a Wine core fix,
+     not a GDK one, so it is here for convenience — send it upstream to WineHQ
+     separately. Verified on Wine 11.0: 50 X-Methods / 10325 gameservices lines
+     with zero refusals, versus 47 / 9227 with the userspace shim it replaces.
+     ⚠ Because it is a **core** DLL, it only takes effect if you build and ship
+     this tree's `bcrypt.dll`. Dropping it into an existing Proton works, but
+     **only the PE half** — `bcrypt.so` is a native Linux object and a Proton
+     built for the Steam Linux Runtime (`-slr-`) will not load one built against
+     your host's libraries.
    - **#19** `NtAllocateVirtualMemory`'s `type_mask` in
      `dlls/ntdll/unix/virtual.c` rejects `MEM_LARGE_PAGES|MEM_PHYSICAL` with
      `STATUS_INVALID_PARAMETER`, so a 14 MB staging pool allocated in a C++
