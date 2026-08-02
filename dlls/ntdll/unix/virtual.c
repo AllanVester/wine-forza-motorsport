@@ -5554,7 +5554,16 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
 NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR zero_bits,
                                          SIZE_T *size_ptr, ULONG type, ULONG protect )
 {
-    static const ULONG type_mask = MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH | MEM_RESET;
+    /* MEM_LARGE_PAGES is a performance hint and is accepted-and-ignored: rejecting
+     * the whole allocation for it strands callers that never check the result.
+     * MEM_PHYSICAL is AWE and is NOT implemented - it is tolerated here only so
+     * that callers passing it alongside MEM_LARGE_PAGES (Forza Motorsport asks for
+     * MEM_COMMIT|MEM_RESERVE|MEM_PHYSICAL|MEM_LARGE_PAGES for a 14 MB pool and does
+     * not check the result) get ordinary memory instead of a NULL they will later
+     * dereference. A caller that genuinely follows up with MapUserPhysicalPages
+     * still needs real AWE support, so say so once rather than silently. */
+    static const ULONG type_mask = MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH | MEM_RESET
+                                   | MEM_LARGE_PAGES | MEM_PHYSICAL;
     ULONG_PTR limit;
 
     TRACE("%p %p %08lx %x %08x\n", process, *ret, *size_ptr, type, protect );
@@ -5566,6 +5575,11 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
     if (!is_old_wow64() && zero_bits >= 32) return STATUS_INVALID_PARAMETER_3;
 #endif
     if (type & ~type_mask) return STATUS_INVALID_PARAMETER;
+    if (type & MEM_PHYSICAL)
+    {
+        static int warned;
+        if (!warned++) FIXME( "MEM_PHYSICAL (AWE) not implemented, ignoring\n" );
+    }
 
     if (process != NtCurrentProcess())
     {
@@ -5693,8 +5707,11 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
                                            ULONG protect, MEM_EXTENDED_PARAMETER *parameters,
                                            ULONG count )
 {
+    /* Same reasoning as NtAllocateVirtualMemory above: MEM_LARGE_PAGES is a hint,
+     * MEM_PHYSICAL is tolerated but not implemented. */
     static const ULONG type_mask = MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH
-                                   | MEM_RESET | MEM_RESERVE_PLACEHOLDER | MEM_REPLACE_PLACEHOLDER;
+                                   | MEM_RESET | MEM_RESERVE_PLACEHOLDER | MEM_REPLACE_PLACEHOLDER
+                                   | MEM_LARGE_PAGES | MEM_PHYSICAL;
     ULONG_PTR limit_low = 0;
     ULONG_PTR limit_high = 0;
     ULONG_PTR align = 0;
