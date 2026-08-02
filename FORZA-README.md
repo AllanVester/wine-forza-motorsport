@@ -89,14 +89,46 @@ GDK layer. Do not expect this branch alone to be enough.
      half, so unlike #18 it cannot be dropped into an existing `-slr-`
      Proton at all — it only takes effect in a Proton built from this
      tree, which is exactly what this repo is for.
-   ⚠ These replace Wine **builtins**, so unlike `winegdkrt.dll` they must be
+   ⚠ These replace Wine **builtins**, so unlike `xgameruntime.dll` they must be
    built from the *same* Wine version as the Proton they ship in — the PE
    `bcrypt.dll` reaches its unix half through a version-specific unixlib enum.
-3. **One behavioural workaround that is not a Wine bug at all.** Measured by
-   bisection: with everything else stripped, the title still dies ~14 s in
-   unless a single dword is written into its own memory to switch off its
-   internal recorder. Why the recorder is fatal under Wine is **unknown** —
-   the title has never been observed booting with it running on this stack.
+3. ~~**One behavioural workaround that is not a Wine bug at all.** … the title
+   still dies ~14 s in unless a single dword is written … Why the recorder is
+   fatal under Wine is **unknown**.~~ — **BOTH CLAIMS WERE WRONG, AND THIS IS
+   NOW HANDLED IN THIS BRANCH** (`dlls/xgameruntime/titlequirks.c`).
+
+   The recorder is **not** fatal: the title signs in fine with it running
+   (measured, 6625 gameservices lines). The ~14 s "deaths" were an artefact of
+   the test harness — a 6 GB RSS guard on a 5-second poll, which the
+   recorder-on arm crossed at t+16 s and the recorder-off arm never did.
+
+   What the recorder actually costs is **memory**. It appends a 24-byte record
+   to a per-CPU vector on every `free`; its consumer is real and drains them,
+   but only once the title is ticking (~10 s in), so everything freed during
+   loading accumulates first — ~15 million records under Proton. The records
+   are not the problem; what the churn does to the title's *own* allocator is.
+   Paired runs differing only in that dword, large blocks ≥ 1 MB at t+20 s:
+
+   | | recorder off | recorder on |
+   |---|---|---|
+   | allocated | 377 MB / 51 calls | 2807 MB / 160 calls |
+   | freed | 288 MB / 32 calls | 788 MB / 84 calls |
+   | **live** | **88 MB** | **2019 MB** |
+
+   With it off the allocator returns 94 % of what it takes and holds a flat
+   180 MB; with it on the free count *sticks* while allocation runs away. Those
+   bytes never reach `HeapFree`, so the retention is above the Win32 boundary,
+   inside the title's arena — **there is nothing for Wine to return and nothing
+   to fix in Wine.** Resident set reaches 14.4 GB by t+105 s and was still
+   climbing, against a ~5.1 GB plateau with the recorder off.
+
+   `titlequirks.c` therefore writes that one dword during `DllMain`, behind an
+   exact-image check (executable name, both globals inside the image, bucket
+   count equal to processor count + 1, context outside the image, and the
+   context's own copy of the count matching the global — any mismatch and the
+   title is left untouched). Set `WINEGDK_FORZA_QUIRKS=0` to keep the recorder
+   running. ⚠ It patches a game's memory and **must never be sent upstream to
+   WineHQ**; it is fenced into that one file so it can be dropped wholesale.
 
 ## Known unrelated failure
 
