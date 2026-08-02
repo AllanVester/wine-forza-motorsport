@@ -795,9 +795,26 @@ static NTSTATUS set_alg_property( struct algorithm *alg, const WCHAR *prop, UCHA
     }
 }
 
+static NTSTATUS key_symmetric_set_vector( struct key *, UCHAR *, ULONG, BOOL );
+
 static NTSTATUS set_key_property( struct key *key, const WCHAR *prop, UCHAR *value, ULONG size, ULONG flags )
 {
-    if (!wcscmp( prop, BCRYPT_CHAINING_MODE ))
+    if (!wcscmp( prop, BCRYPT_INITIALIZATION_VECTOR ))
+    {
+        /* Setting the IV on the key handle, then calling BCryptEncrypt/Decrypt
+         * with pbIV = NULL, is the documented CNG way to supply an IV once.
+         * Returning STATUS_NOT_IMPLEMENTED here breaks any application that
+         * uses it: Forza Motorsport imports an AES-128 key this way and gives
+         * up when the property is refused, so no content is ever decrypted and
+         * the title loops forever on "Attempting to reconnect".
+         * key_symmetric_set_vector() is what BCryptEncrypt/BCryptDecrypt
+         * already use for their pbIV argument, so this just routes the same
+         * value in a call earlier. force_reset, because an explicit IV is a
+         * request to restart the chain, not to continue it. */
+        if (!is_symmetric_key( key )) return STATUS_INVALID_HANDLE;
+        return key_symmetric_set_vector( key, value, size, TRUE );
+    }
+    else if (!wcscmp( prop, BCRYPT_CHAINING_MODE ))
     {
         if (!wcscmp( (WCHAR *)value, BCRYPT_CHAIN_MODE_ECB ))
         {
