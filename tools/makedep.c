@@ -616,12 +616,19 @@ static int is_native_arch_disabled( struct makefile *make )
  */
 static int is_subdir_other_arch( const char *name, unsigned int arch )
 {
+    static const char * const arch_names[] = { "i386", "x86_64", "arm", "aarch64", "arm64ec" };
+    unsigned int i, is_arch = 0;
     const char *dir, *p = strrchr( name, '/' );
 
     if (!p || p == name) return 0;
     dir = get_basename( strmake( "%.*s", (int)(p - name), name ));
     if (!strcmp( dir, "arm64" )) dir = "aarch64";
     if (!strcmp( dir, "amd64" )) dir = "x86_64";
+    /* only a subdirectory actually named after a cpu means "for another arch";
+     * anything else (e.g. libunwind's src/) is not an arch subdir at all */
+    for (i = 0; i < sizeof(arch_names) / sizeof(arch_names[0]); i++)
+        if (!strcmp( dir, arch_names[i] )) is_arch = 1;
+    if (!is_arch) return 0;
     if (native_archs[arch] && !strcmp( dir, archs.str[native_archs[arch]] )) return 0;
     return strcmp( dir, archs.str[arch] );
 }
