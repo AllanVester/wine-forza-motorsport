@@ -1,0 +1,34 @@
+IMPORTS   = user32 advapi32 bcrypt crypt32 combase shlwapi winhttp wininet $(CXXABI_PE_LIBS) $(CXX_PE_LIBS) $(XML2_PE_LIBS) vcruntime140
+EXTRAINCL = $(XML2_PE_CFLAGS)
+MODULE    = xgameruntime.dll
+UNIXLIB   = xgameruntime.so
+
+SOURCES = \
+	main.c \
+	userprovider.idl \
+	util.c \
+	xodusprovider.idl \
+	provider.idl \
+	\
+	WineCoreUAP/Foundation/IWineAsync.cpp \
+	WineCoreUAP/Foundation/IWineVector.cpp \
+	\
+	GDKComponent/System/Threading/XAsync.cpp \
+	GDKComponent/System/Threading/XTaskQueue.cpp \
+	GDKComponent/System/Threading/WaitTimer.cpp \
+	GDKComponent/System/Threading/ThreadPool.cpp \
+	\
+	GDKComponent/System/XThreading.cpp \
+	GDKComponent/System/XGame.c \
+	GDKComponent/System/XGameRuntimeFeature.cpp \
+	GDKComponent/System/XSystem.cpp \
+	GDKComponent/System/XSystemAnalytics.cpp \
+	GDKComponent/System/XNetworking.cpp \
+	GDKComponent/System/XUser.c \
+	\
+	GDKComponent/Xodus/Structs.cpp \
+	GDKComponent/Xodus/IPCLayer.cpp \
+	GDKComponent/Xodus/XodusService.cpp \
+	GDKComponent/Xodus/XodusXMLBuilder.cpp \
+	\
+	GDKComponent/Xodus/Unix/socket.c
