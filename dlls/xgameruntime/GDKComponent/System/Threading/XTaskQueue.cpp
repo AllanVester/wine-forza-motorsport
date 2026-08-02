@@ -23,6 +23,16 @@ WINE_DEFAULT_DEBUG_CHANNEL(gdkc);
 
 inline ITaskQueue* GetQueue(XTaskQueueHandle handle)
 {
+    /* Every caller already treats a nullptr return as "bad handle" (see
+     * XTaskQueueDispatch etc.), but the signature was read BEFORE the pointer was
+     * checked - so a NULL/!valid handle faulted at address 0 inside the compare
+     * (cmpl $TASK_QUEUE_SIGNATURE,(%rcx)) instead of being rejected cleanly. */
+    if (handle == nullptr)
+    {
+        WARN("null XTaskQueueHandle\n");
+        return nullptr;
+    }
+
     if (handle->m_signature != TASK_QUEUE_SIGNATURE)
     {
         assert("Invalid XTaskQueueHandle");
@@ -30,6 +40,11 @@ inline ITaskQueue* GetQueue(XTaskQueueHandle handle)
     }
 
     ITaskQueue* queue = handle->m_queue;
+    if (queue == nullptr)
+    {
+        WARN("XTaskQueueHandle %p has no queue\n", handle);
+        return nullptr;
+    }
 
     if (handle != queue->GetHandle())
     {

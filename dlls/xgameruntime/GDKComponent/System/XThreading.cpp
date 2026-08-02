@@ -236,8 +236,18 @@ public:
 
     void WINAPI XThreadAssertNotTimeSensitive() override
     {
+        /* This is a DIAGNOSTIC api - the real GDK asserts only in debug builds. Aborting a
+         * release runtime here kills the title outright, which is what FM hit.
+         *
+         * It is doubly wrong as written: isTimeSensitiveThread is a single instance member,
+         * but XThreadSetTimeSensitive marks the CALLING thread and this checks the CURRENT
+         * one - so a title that marks its render thread then calls this from a worker trips
+         * it every time. (A thread_local fixes the semantics but is unreliable in a
+         * dynamically-loaded PE under mingw - TLS callbacks do not run for pre-existing
+         * threads - so use TlsAlloc/TlsGetValue if the per-thread state is wanted.)
+         * Warn instead of aborting. */
         if ( isTimeSensitiveThread )
-            assert( false );
+            WARN( "called on a thread flagged time-sensitive\n" );
     }
 
     BOOLEAN WINAPI XThreadIsTimeSensitive() override

@@ -258,7 +258,16 @@ _INIT:
                 else if (!strcmp( (char *)child->name, "TitleId" ))
                 {
                     char *value = (char *)xmlNodeGetContent( child );
-                    titleId = strtoul( value, NULL, 10 );
+                    /* TitleId in MicrosoftGame.config is HEXADECIMAL, with no 0x
+                     * prefix - Forza Motorsport ships <TitleId>6DD4E56D</TitleId>.
+                     * Base 10 stops at the first non-decimal digit, so "6DD4E56D"
+                     * parsed as 6, and XGameGetXboxTitleId handed the title 6
+                     * instead of 0x6DD4E56D (1842668909). FM compares the title id
+                     * recorded in the downloaded player profile against this one and
+                     * refuses the profile when they differ, which surfaces as
+                     * "NOT CONNECTED - Reason: Failed to sign in". Base 16 also
+                     * accepts an optional 0x prefix, so it is correct either way. */
+                    titleId = strtoul( value, NULL, 16 );
                     free( value );
                 }
                 else if (!strcmp( (char *)child->name, "MSAFullTrust" ))
