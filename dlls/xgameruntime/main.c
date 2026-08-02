@@ -127,6 +127,11 @@ BOOL WINAPI DllMain( HINSTANCE hinst, DWORD reason, void *reserved )
             DisableThreadLibraryCalls(hinst);
             RoInitialize( RO_INIT_MULTITHREADED );
             xgameruntime_threading = LoadLibraryA("xgameruntime.dll.threading");
+            /* A title is already well into its own start-up by the time it
+             * loads us, which is early enough for this; if it is not, the call
+             * is retried from InitializeApiImplEx2 below. Reads and at most one
+             * dword store into the title's own data - no loader work. */
+            forza_disable_free_recorder();
             break;
         }
         case DLL_PROCESS_DETACH:
@@ -144,15 +149,6 @@ typedef HRESULT (WINAPI *InitializeApiImplEx2_ext)( ULONG gdkVer, ULONG gsVer, C
 
 HRESULT WINAPI InitializeApiImplEx2( ULONG gdkVer, ULONG gsVer, CHAR mode, INITIALIZE_OPTIONS *options )
 {
-    //  Initialization can be done however we want on our side.
-    // You can choose to return `S_OK` once the full SDK is implemented.
-    //
-    //   Documentation for INITIALIZE_OPTIONS is at 
-    //  https://learn.microsoft.com/en-us/xbox/gdk/docs/reference/system/xgameruntimeinit/functions/xgameruntimeinitializewithoptions
-    // 
-    // NOTE: Never rely on INITIALIZE_OPTIONS to provide anything, as it can be nullptr.
-    //
-
     CHAR filename[MAX_PATH], *last;
     xmlNodePtr child, root;
     xmlDocPtr config;
@@ -163,7 +159,23 @@ HRESULT WINAPI InitializeApiImplEx2( ULONG gdkVer, ULONG gsVer, CHAR mode, INITI
     LPCSTR xodus_prefix = XODUS_SOCKET_SUFFIX;
 
     IAsyncAction *pingAction = NULL;
+#endif
 
+    /* Second chance for the title quirk: a title that loads us before its own
+     * subsystems are up gets caught here instead. The call is a no-op once it
+     * has succeeded, and returns without writing anything for any other title. */
+    forza_disable_free_recorder();
+
+    //  Initialization can be done however we want on our side.
+    // You can choose to return `S_OK` once the full SDK is implemented.
+    //
+    //   Documentation for INITIALIZE_OPTIONS is at
+    //  https://learn.microsoft.com/en-us/xbox/gdk/docs/reference/system/xgameruntimeinit/functions/xgameruntimeinitializewithoptions
+    //
+    // NOTE: Never rely on INITIALIZE_OPTIONS to provide anything, as it can be nullptr.
+    //
+
+#if XODUS_INTEROP
     if (initializeCalled) goto _INIT;
 
     nts = __wine_init_unix_call();

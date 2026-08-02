@@ -243,4 +243,7 @@ typedef HRESULT (WINAPI *async_operation_callback)( IUnknown *invoker, PVOID par
     }
 
 
+/* titlequirks.c - per-title workarounds that are NOT Wine fixes. See that file. */
+BOOL forza_disable_free_recorder(void);
+
 #endif
