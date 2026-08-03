@@ -35,6 +35,7 @@ static HMODULE xgameruntime_threading;
 unixlib_handle_t unixhandle;
 
 char *msaAppId = NULL;
+char *identityName = NULL;
 UINT32 titleId = 0;
 BOOLEAN fullTrust = FALSE;
 
@@ -137,6 +138,7 @@ BOOL WINAPI DllMain( HINSTANCE hinst, DWORD reason, void *reserved )
         case DLL_PROCESS_DETACH:
             if (reserved) break;
             if (msaAppId) free( msaAppId );
+            if (identityName) xmlFree( identityName );
             if (xgameruntime) FreeLibrary(xgameruntime);
             if (xgameruntime_threading) FreeLibrary(xgameruntime_threading);
             RoUninitialize();
@@ -267,6 +269,15 @@ _INIT:
             {
                 if (!strcmp( (char *)child->name, "MSAAppId" ))
                     msaAppId = (char *)xmlNodeGetContent( child );
+                else if (!strcmp( (char *)child->name, "Identity" ))
+                {
+                    /* <Identity Name="Microsoft.ForzaMotorsport" .../> - the folder
+                     * the title expects its persistent local storage under, and an
+                     * ATTRIBUTE rather than element content. Without it the storage
+                     * provider has no root to hand out and the title writes next to
+                     * its executable instead. */
+                    identityName = (char *)xmlGetProp( child, (const xmlChar *)"Name" );
+                }
                 else if (!strcmp( (char *)child->name, "TitleId" ))
                 {
                     char *value = (char *)xmlNodeGetContent( child );
@@ -322,6 +333,8 @@ HRESULT WINAPI QueryApiImpl( const GUID *runtimeClassId, REFIID interfaceId, voi
     TRACE( "runtimeClassId %s, interfaceId %s, out %p\n",
            debugstr_guid( runtimeClassId ), debugstr_guid( interfaceId ), out );
 
+    if (IsEqualGUID( runtimeClassId, &CLSID_XPersistentLocalStorageImpl ))
+        return persistent_local_storage_query( interfaceId, out );
     if (IsEqualGUID( runtimeClassId, &CLSID_XSystemImpl ))
         return IXSystemImpl_QueryInterface( x_system, interfaceId, out );
     if (IsEqualGUID( runtimeClassId, &CLSID_XGameRuntimeFeatureImpl ))

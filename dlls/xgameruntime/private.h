@@ -104,6 +104,7 @@ extern BOOLEAN initializeCalled;
 
 extern char *msaAppId;
 extern UINT32 titleId;
+extern char *identityName;
 extern BOOLEAN fullTrust;
 
 extern IXThreadingImpl *x_threading_impl;
@@ -242,6 +243,10 @@ typedef HRESULT (WINAPI *async_operation_callback)( IUnknown *invoker, PVOID par
         return ret;                                                                                 \
     }
 
+
+/* persistentlocalstorage.c - the per-title storage root the GDK runtime owns. */
+extern const GUID CLSID_XPersistentLocalStorageImpl;
+HRESULT persistent_local_storage_query( REFIID iid, void **out );
 
 /* titlequirks.c - per-title workarounds that are NOT Wine fixes. See that file. */
 BOOL forza_disable_free_recorder(void);
