@@ -772,21 +772,22 @@ static BOOL relying_party_needs_title_claim( const char *relyingParty )
 static HRESULT user_request_xsts_token_via_xodus( struct XUser *impl, const char *relyingParty )
 {
     char *token = NULL, *userHash = NULL, *xuid = NULL, *newRelyingParty = NULL;
-    char clientId[64] = {}, titleId[32] = {};
+    char titleIdStr[16];
     HSTRING hToken = NULL, hUserHash = NULL;
     HRESULT hr;
 
-    /* The service cannot know the title's identity; the config we parsed can. */
-    if (!GetEnvironmentVariableA( "WINEGDK_TITLE_CLIENT_ID", clientId, sizeof(clientId) ) ||
-        !GetEnvironmentVariableA( "WINEGDK_TITLE_ID", titleId, sizeof(titleId) ))
+    /* The service cannot know the title's identity; the config we parsed can.
+       Both values come straight out of MicrosoftGame.config - <MSAAppId> and
+       <TitleId> - so there is nothing here for a deployment to supply. */
+    if (!msaAppId || !titleId)
     {
-        ERR( "WINEGDK_TITLE_RELYING_PARTIES matched %s but WINEGDK_TITLE_CLIENT_ID / "
-             "WINEGDK_TITLE_ID are not set - cannot ask for a title claim.\n",
-             debugstr_a( relyingParty ) );
+        ERR( "%s needs a title claim, but MicrosoftGame.config yielded no "
+             "MSAAppId/TitleId to ask for one with.\n", debugstr_a( relyingParty ) );
         return E_INVALIDARG;
     }
+    snprintf( titleIdStr, sizeof(titleIdStr), "%u", titleId );
 
-    if (FAILED(hr = xodus_request_xsts( relyingParty, clientId, titleId, &token, &userHash, &xuid )))
+    if (FAILED(hr = xodus_request_xsts( relyingParty, msaAppId, titleIdStr, &token, &userHash, &xuid )))
         return hr;
 
     if (FAILED(hr = MultiByteToHSTRING( token, strlen( token ), &hToken ))) goto cleanup;
