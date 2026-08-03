@@ -224,8 +224,10 @@ static NTSTATUS send_frm( void *args )
 
         if ( n < 0 )
         {
-            if ( errno == EINTR )
+            if ( errno == EINTR || errno == EAGAIN )
                 continue;
+            WARN( "Failed to send frame on fd %d: %s. %zd of %zu bytes written.\n",
+                  sockfd, strerror( errno ), sent, (size_t)frame->frameSize );
             return STATUS_CONNECTION_RESET;
         }
 
