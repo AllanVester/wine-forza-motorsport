@@ -138,20 +138,44 @@ static NTSTATUS conn_sock( void *args )
 {
     struct sockaddr_un addr;
     LPCSTR socket_suffix = args;
+    const char *override;
     char *socket_path;
     size_t len;
     int error;
 
+    /* Where the service listens is a deployment decision, not a property of the
+       title: a container may bind the socket somewhere else entirely, and
+       XDG_RUNTIME_DIR need not be set at all. An explicit full path to the socket
+       wins over both, and makes socket_suffix unused. */
+    override = getenv( "WINEGDK_XODUS_SOCKET" );
+    if (override && *override)
+    {
+        if (!(socket_path = strdup( override ))) return STATUS_NO_MEMORY;
+    }
+    else
+    {
 #ifdef __linux__
-    const char *runtime = getenv( "XDG_RUNTIME_DIR" );
-    if (!runtime) return E_NOT_VALID_STATE;
+        const char *runtime = getenv( "XDG_RUNTIME_DIR" );
+        if (!runtime) return E_NOT_VALID_STATE;
 #elif defined(__APPLE__)
-    const char *runtime = "/tmp";
+        const char *runtime = "/tmp";
 #endif
+        len = strlen( runtime ) + strlen( socket_suffix ) + 2;
+        if (!(socket_path = malloc( len ))) return STATUS_NO_MEMORY;
+        snprintf( socket_path, len, "%s/%s", runtime, socket_suffix );
+    }
 
-    len = strlen( runtime ) + strlen( socket_suffix ) + 2;
-    if (!(socket_path = malloc( len ))) return STATUS_NO_MEMORY;
-    snprintf( socket_path, len, "%s/%s", runtime, socket_suffix );
+    /* sun_path is fixed size and lstrcpynA would quietly truncate, turning a path
+       that is merely too long into a confusing connection failure. */
+    if (strlen( socket_path ) >= sizeof(addr.sun_path))
+    {
+        WARN( "Xodus socket path %s is longer than the %zu bytes sun_path holds.\n",
+              debugstr_a( socket_path ), sizeof(addr.sun_path) - 1 );
+        free( socket_path );
+        return STATUS_NAME_TOO_LONG;
+    }
+
+    TRACE( "connecting to %s\n", debugstr_a( socket_path ) );
 
     sockfd = socket( AF_UNIX, SOCK_STREAM, 0 );
     if (sockfd < 0)
