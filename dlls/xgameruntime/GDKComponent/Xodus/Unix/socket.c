@@ -108,6 +108,16 @@ WINE_DEFAULT_DEBUG_CHANNEL(xodus);
 // Persist connection
 static int sockfd = 0;
 
+/*
+ * The title sends frames from several threads at once - a Ping from the init
+ * thread, then MSA and XSTS token requests from async workers, two of which can
+ * be in flight together. Each frame is a magic + type + length header followed by
+ * its body, and the socket is a single byte stream, so two unserialised write()
+ * loops could interleave mid frame and leave the service reading the middle of
+ * one frame where the next frame's magic should be.
+ */
+static pthread_mutex_t send_lock = PTHREAD_MUTEX_INITIALIZER;
+
 typedef struct _POLL_SOCKET_ARGS
 {
     BYTE curr_buffer[POLL_BUFFER_SIZE];
@@ -218,6 +228,9 @@ static NTSTATUS send_frm( void *args )
     TRACE("len is %d\n", len);
     TRACE("body is %s\n", debugstr_an((const char *)body, len));
 
+    /* One frame at a time onto the shared stream - see send_lock. */
+    pthread_mutex_lock( &send_lock );
+
     while ( sent < frame->frameSize )
     {
         ssize_t n = write( sockfd, (char *)frame->frame + sent, frame->frameSize - sent );
@@ -228,11 +241,16 @@ static NTSTATUS send_frm( void *args )
                 continue;
             WARN( "Failed to send frame on fd %d: %s. %zd of %zu bytes written.\n",
                   sockfd, strerror( errno ), sent, (size_t)frame->frameSize );
+            /* Unlock on the error path too: leaving it held would deadlock every
+               later send rather than just failing this one. */
+            pthread_mutex_unlock( &send_lock );
             return STATUS_CONNECTION_RESET;
         }
 
         sent += n;
     }
+
+    pthread_mutex_unlock( &send_lock );
 
     return STATUS_SUCCESS;
 }
