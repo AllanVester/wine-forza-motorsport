@@ -114,9 +114,13 @@ typedef struct _POLL_SOCKET_ARGS
     SIZE_T curr_buffer_size;
 } POLL_SOCKET_ARGS;
 
+/* Must match the PE-side definition in GDKComponent/Xodus/IPCLayer.cpp. frameSize
+   is a UINT32 there, and was a SIZE_T here: the pointer still landed on offset 8
+   in both, so a frame looked perfectly well formed while its length was the real
+   32-bit size with four bytes of uninitialised heap on top of it. */
 typedef struct _IPCFrame
 {
-    SIZE_T frameSize;
+    UINT32 frameSize;
     BYTE* frame;
 } IPCFrame;
 
