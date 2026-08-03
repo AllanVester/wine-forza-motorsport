@@ -747,22 +747,25 @@ extern HRESULT xodus_request_xsts( const char *relyingParty, const char *clientI
  * Relying parties whose XSTS must carry a TITLE claim, and therefore has to be
  * minted by the Xodus service rather than here.
  *
- * WHY NOT ALWAYS. A token minted there is bound to the SERVICE's proof key, so
- * requests carrying it cannot be signed by this process - and the xboxlive.com
- * relying parties DO send a 104-byte signature that is validated against the
- * token's key. Routing everything through the service would break them. Only the
- * relying parties that actually need a title claim are sent that way, and for
- * those the Windows ground truth sends an EMPTY Signature anyway.
+ * By default that is every relying party. Only the service holds the device
+ * identity a title token has to be bound to, and the four Forza Motorsport signs
+ * in through - xboxlive.com, sisu.xboxlive.com, playfab.xboxlive.com and the
+ * title's own xboxliveauth host - are all minted there in the configuration that
+ * completes a sign-in.
  *
- * WINEGDK_TITLE_RELYING_PARTIES is a comma-separated list of substrings, e.g.
+ * WINEGDK_TITLE_RELYING_PARTIES narrows that to a comma-separated list of
+ * substrings, e.g.
  *   WINEGDK_TITLE_RELYING_PARTIES=forzamotorsport
- * Unset, nothing changes and every token is minted locally as before.
+ * for a title that needs the rest minted locally. A token the service minted is
+ * bound to the SERVICE's proof key, so a request carrying it cannot be signed by
+ * this process; a title that sends a real 104-byte signature rather than the
+ * empty one the Windows ground truth sends needs its relying party left off.
  */
 static BOOL relying_party_needs_title_claim( const char *relyingParty )
 {
     char list[512], *tok, *ctx;
 
-    if (!GetEnvironmentVariableA( "WINEGDK_TITLE_RELYING_PARTIES", list, sizeof(list) )) return FALSE;
+    if (!GetEnvironmentVariableA( "WINEGDK_TITLE_RELYING_PARTIES", list, sizeof(list) )) return TRUE;
     for (tok = strtok_s( list, ",", &ctx ); tok; tok = strtok_s( NULL, ",", &ctx ))
         if (*tok && strstr( relyingParty, tok )) return TRUE;
     return FALSE;
