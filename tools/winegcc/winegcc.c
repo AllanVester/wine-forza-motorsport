@@ -578,6 +578,13 @@ static struct strarray get_link_args( const char *output_name )
         else if (!try_link( link_args, "-Wl,--file-alignment,0x1000,--section-alignment,0x1000" ))
             strarray_add( &link_args, strmake( "-Wl,--file-alignment,%s,--section-alignment,%s",
                                                file_align, section_align ));
+        /* winecrt0's GCC-static-constructor bridge is only ever reached through
+         * its .CRT$XCB section pointer, so nothing in the link references it by
+         * name and the linker leaves it in the archive - which silently means
+         * C++ static constructors never run and every global object keeps a
+         * NULL vtable. Force it in. */
+        strarray_add( &link_args, target.cpu == CPU_i386 ?
+                      "-Wl,--undefined,___wine_call_gcc_ctors" : "-Wl,--undefined,__wine_call_gcc_ctors" );
         strarray_addall( &link_args, flags );
         return link_args;
 

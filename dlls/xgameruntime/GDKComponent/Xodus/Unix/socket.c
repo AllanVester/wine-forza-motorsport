@@ -1,0 +1,287 @@
+/*
+ * Xbox Game runtime Library
+ *  Xodus Interopability Layer -> Unix module -> Socket
+ * 
+ * Written by Weather
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ */
+
+#if 0
+#pragma makedep unix
+#endif
+
+#include "ntstatus.h"
+#define WIN32_NO_STATUS
+#include "windef.h"
+#include "winbase.h"
+#include "winternl.h"
+#include "initguid.h"
+
+#include "wine/unixlib.h"
+#include "wine/list.h"
+#include "wine/unixlib.h"
+#include "wine/debug.h"
+
+#include <errno.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/un.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/uio.h>
+#ifdef HAVE_NETDB_H
+# include <netdb.h>
+#endif
+#ifdef HAVE_SYS_PARAM_H
+# include <sys/param.h>
+#endif
+#ifdef HAVE_SYS_SOCKIO_H
+# include <sys/sockio.h>
+#endif
+#ifdef HAVE_NETINET_IN_H
+# include <netinet/in.h>
+#endif
+#ifdef HAVE_NETINET_TCP_H
+# include <netinet/tcp.h>
+#endif
+#ifdef HAVE_ARPA_INET_H
+# include <arpa/inet.h>
+#endif
+#ifdef HAVE_NET_IF_H
+# define if_indextoname unix_if_indextoname
+# define if_nametoindex unix_if_nametoindex
+# include <net/if.h>
+# undef if_indextoname
+# undef if_nametoindex
+#endif
+#ifdef HAVE_IFADDRS_H
+# include <ifaddrs.h>
+#endif
+#include <poll.h>
+
+#ifdef HAVE_NETIPX_IPX_H
+# include <netipx/ipx.h>
+# define HAS_IPX
+#elif defined(HAVE_LINUX_IPX_H)
+# ifdef HAVE_ASM_TYPES_H
+#  include <asm/types.h>
+# endif
+# ifdef HAVE_LINUX_TYPES_H
+#  include <linux/types.h>
+# endif
+# include <linux/ipx.h>
+# ifdef SOL_IPX
+#  define HAS_IPX
+# endif
+#endif
+
+#ifdef HAVE_LINUX_IRDA_H
+# ifdef HAVE_LINUX_TYPES_H
+#  include <linux/types.h>
+# endif
+# include <linux/irda.h>
+# define HAS_IRDA
+#endif
+
+#define POLL_BUFFER_SIZE 0x10008 /* UINT16 payload plus IPC header */
+
+WINE_DEFAULT_DEBUG_CHANNEL(xodus);
+
+// Persist connection
+static int sockfd = 0;
+
+/*
+ * The title sends frames from several threads at once - a Ping from the init
+ * thread, then MSA and XSTS token requests from async workers, two of which can
+ * be in flight together. Each frame is a magic + type + length header followed by
+ * its body, and the socket is a single byte stream, so two unserialised write()
+ * loops could interleave mid frame and leave the service reading the middle of
+ * one frame where the next frame's magic should be.
+ */
+static pthread_mutex_t send_lock = PTHREAD_MUTEX_INITIALIZER;
+
+typedef struct _POLL_SOCKET_ARGS
+{
+    BYTE curr_buffer[POLL_BUFFER_SIZE];
+    SIZE_T curr_buffer_size;
+} POLL_SOCKET_ARGS;
+
+/* Must match the PE-side definition in GDKComponent/Xodus/IPCLayer.cpp. frameSize
+   is a UINT32 there, and was a SIZE_T here: the pointer still landed on offset 8
+   in both, so a frame looked perfectly well formed while its length was the real
+   32-bit size with four bytes of uninitialised heap on top of it. */
+typedef struct _IPCFrame
+{
+    UINT32 frameSize;
+    BYTE* frame;
+} IPCFrame;
+
+static NTSTATUS conn_sock( void *args )
+{
+    struct sockaddr_un addr;
+    LPCSTR socket_suffix = args;
+    const char *override;
+    char *socket_path;
+    size_t len;
+    int error;
+
+    /* Where the service listens is a deployment decision, not a property of the
+       title: a container may bind the socket somewhere else entirely, and
+       XDG_RUNTIME_DIR need not be set at all. An explicit full path to the socket
+       wins over both, and makes socket_suffix unused. */
+    override = getenv( "WINEGDK_XODUS_SOCKET" );
+    if (override && *override)
+    {
+        if (!(socket_path = strdup( override ))) return STATUS_NO_MEMORY;
+    }
+    else
+    {
+#ifdef __linux__
+        const char *runtime = getenv( "XDG_RUNTIME_DIR" );
+        if (!runtime) return E_NOT_VALID_STATE;
+#elif defined(__APPLE__)
+        const char *runtime = "/tmp";
+#endif
+        len = strlen( runtime ) + strlen( socket_suffix ) + 2;
+        if (!(socket_path = malloc( len ))) return STATUS_NO_MEMORY;
+        snprintf( socket_path, len, "%s/%s", runtime, socket_suffix );
+    }
+
+    /* sun_path is fixed size and lstrcpynA would quietly truncate, turning a path
+       that is merely too long into a confusing connection failure. */
+    if (strlen( socket_path ) >= sizeof(addr.sun_path))
+    {
+        WARN( "Xodus socket path %s is longer than the %zu bytes sun_path holds.\n",
+              debugstr_a( socket_path ), sizeof(addr.sun_path) - 1 );
+        free( socket_path );
+        return STATUS_NAME_TOO_LONG;
+    }
+
+    TRACE( "connecting to %s\n", debugstr_a( socket_path ) );
+
+    sockfd = socket( AF_UNIX, SOCK_STREAM, 0 );
+    if (sockfd < 0)
+    {
+        free( socket_path );
+        return STATUS_ABANDONED;
+    }
+
+    memset( &addr, 0, sizeof(addr) );
+    addr.sun_family = AF_UNIX;
+    lstrcpynA( addr.sun_path, socket_path, sizeof(addr.sun_path) );
+
+    if (connect( sockfd, (struct sockaddr *)&addr, sizeof(addr) ) < 0)
+    {
+        error = errno;
+        WARN( "Failed to connect to Xodus socket %s: %s.\n", socket_path, strerror( error ) );
+        close( sockfd );
+        sockfd = -1;
+        free( socket_path );
+        return STATUS_CONNECTION_REFUSED;
+    }
+
+    free( socket_path );
+    return STATUS_SUCCESS;
+}
+
+// MUST BE CALLED IN AN ASYNCHRONOUS CONTEXT!
+static NTSTATUS poll_sock( void *args )
+{
+    POLL_SOCKET_ARGS *socket_args = (POLL_SOCKET_ARGS *)args;
+    struct pollfd fds[1];
+    int ret;
+    ssize_t n;
+
+    TRACE( "args %p\n", args );
+
+    if ( !sockfd )
+        return STATUS_CONNECTION_INVALID;
+
+    fds[0].fd = sockfd;
+    fds[0].events = POLLIN;
+
+    do {
+        ret = poll( fds, 1, -1 );
+    } while ( ret < 0 && errno == EINTR );
+
+    if ( ret < 0 )
+        return STATUS_CONNECTION_DISCONNECTED;
+
+    if ( fds[0].revents & POLLIN ) 
+    {
+        n = read( sockfd, socket_args->curr_buffer + socket_args->curr_buffer_size, POLL_BUFFER_SIZE - socket_args->curr_buffer_size );
+        if ( n <= 0 ) 
+            return STATUS_CONNECTION_DISCONNECTED;
+
+        socket_args->curr_buffer_size += n;
+    }
+
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS send_frm( void *args )
+{
+    IPCFrame *frame = (IPCFrame *)args;
+    ssize_t sent = 0;
+    UINT32 magic = *(UINT32 *)frame->frame;
+    UINT16 type  = *(UINT16 *)(frame->frame + sizeof(UINT32));
+    UINT16 len   = *(UINT16 *)(frame->frame + sizeof(UINT32) + sizeof(UINT16));
+    BYTE* body  = frame->frame + 8;
+
+    TRACE( "args %p\n", args );
+    TRACE("magic is %#x\n", magic);
+    TRACE("type is %d\n", type);
+    TRACE("len is %d\n", len);
+    TRACE("body is %s\n", debugstr_an((const char *)body, len));
+
+    /* One frame at a time onto the shared stream - see send_lock. */
+    pthread_mutex_lock( &send_lock );
+
+    while ( sent < frame->frameSize )
+    {
+        ssize_t n = write( sockfd, (char *)frame->frame + sent, frame->frameSize - sent );
+
+        if ( n < 0 )
+        {
+            if ( errno == EINTR || errno == EAGAIN )
+                continue;
+            WARN( "Failed to send frame on fd %d: %s. %zd of %zu bytes written.\n",
+                  sockfd, strerror( errno ), sent, (size_t)frame->frameSize );
+            /* Unlock on the error path too: leaving it held would deadlock every
+               later send rather than just failing this one. */
+            pthread_mutex_unlock( &send_lock );
+            return STATUS_CONNECTION_RESET;
+        }
+
+        sent += n;
+    }
+
+    pthread_mutex_unlock( &send_lock );
+
+    return STATUS_SUCCESS;
+}
+
+const unixlib_entry_t __wine_unix_call_funcs[] =
+{
+    conn_sock,
+    poll_sock,
+    send_frm
+};
