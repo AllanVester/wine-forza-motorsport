@@ -396,5 +396,104 @@ cleanup:
     return hr;
 }
 
+/*
+ * xodus_request_proof_key - ask the service for the key it mints tokens with.
+ *
+ * WHY. A token is bound to the proof key advertised when it was minted, and only
+ * the holder of that key can sign requests carrying it. We sign our own requests
+ * with tokens the service minted, so we need its key rather than one generated
+ * here - a locally generated key produces signatures Xbox Live refuses, with no
+ * error that says so.
+ *
+ * It has to be the SERVICE's key rather than ours because it mints its device
+ * credentials at startup, before this process has connected to offer one.
+ *
+ * Asking for it over the socket is what keeps both sides unconfigured: there is
+ * nothing to point at a file, and the two cannot disagree. The private half
+ * crosses a unix socket that only this user can open, which is the boundary the
+ * token traffic already depends on.
+ */
+extern "C" HRESULT xodus_request_proof_key( char **x, char **y, char **d )
+{
+    IBufferByteAccess *requestByteAccess = nullptr, *responseByteAccess = nullptr;
+    IXodusIPCPacket *requestPacket = nullptr, *responsePacket = nullptr;
+    IBuffer *requestMessage = nullptr, *responseMessage = nullptr;
+    IAsyncOperation<IXodusIPCPacket *> *asyncop = nullptr;
+    UINT16 messageType = 7; /* PROOF_KEY_REQUEST */
+    static const char xml[] = "<ProofKeyRequest></ProofKeyRequest>";
+    HSTRING_HEADER classNameHeader;
+    IBufferFactory *factory = nullptr;
+    HSTRING className;
+    UINT32 responseLen = 0;
+    BYTE *buffer;
+    HRESULT hr;
+
+    if (!x || !y || !d) return E_INVALIDARG;
+    *x = *y = *d = nullptr;
+    if (!xodus_ipclayer) return E_FAIL;
+
+    if (FAILED(hr = WindowsCreateStringReference( RuntimeClass_Windows_Storage_Streams_Buffer,
+                                                  wcslen( RuntimeClass_Windows_Storage_Streams_Buffer ),
+                                                  &classNameHeader, &className ))) goto cleanup;
+    if (FAILED(hr = RoGetActivationFactory( className, __uuidof( IBufferFactory ), (void **)&factory ))) goto cleanup;
+    if (FAILED(hr = factory->Create( sizeof(xml), &requestMessage ))) goto cleanup;
+    if (FAILED(hr = requestMessage->QueryInterface<IBufferByteAccess>( &requestByteAccess ))) goto cleanup;
+    if (FAILED(hr = requestByteAccess->Buffer( &buffer ))) goto cleanup;
+    if (FAILED(hr = requestMessage->put_Length( sizeof(xml) ))) goto cleanup;
+    memcpy( buffer, xml, sizeof(xml) );
+
+    requestPacket = new XodusIPCPacket( MagicHeaderType::XML, messageType, requestMessage );
+    xodus_ipclayer->SendRequestAsync( requestPacket, &asyncop );
+    if (AsyncOperationCompletedHandler<IXodusIPCPacket *>::await_AsyncOperation( asyncop, INFINITE ))
+    {
+        hr = E_FAIL;
+        goto cleanup;
+    }
+    if (FAILED(hr = asyncop->GetResults( &responsePacket ))) goto cleanup;
+    responsePacket->get_MessageType( &messageType );
+    if (messageType != 8 /* PROOF_KEY_RESPONSE */)
+    {
+        ERR( "Xodus answered message type %u, expected 8 - the service is older than "
+             "this client and cannot share its proof key.\n", messageType );
+        hr = E_FAIL;
+        goto cleanup;
+    }
+
+    responsePacket->get_Message( &responseMessage );
+    if (FAILED(hr = responseMessage->QueryInterface<IBufferByteAccess>( &responseByteAccess ))) goto cleanup;
+    if (FAILED(hr = responseByteAccess->Buffer( &buffer ))) goto cleanup;
+    responseMessage->get_Length( &responseLen );
+    if (!responseLen)
+    {
+        ERR( "Xodus returned an empty proof key response.\n" );
+        hr = E_FAIL;
+        goto cleanup;
+    }
+    buffer[responseLen - 1] = 0;   /* the payload is NUL-terminated by convention */
+
+    *x = xodus_xml_field( (const char *)buffer, "X" );
+    *y = xodus_xml_field( (const char *)buffer, "Y" );
+    *d = xodus_xml_field( (const char *)buffer, "D" );
+    if (!*x || !*y || !*d)
+    {
+        free( *x ); free( *y ); free( *d );
+        *x = *y = *d = nullptr;
+        hr = E_FAIL;
+        goto cleanup;
+    }
+    TRACE( "Xodus shared its proof key.\n" );
+    hr = S_OK;
+
+cleanup:
+    if (responseByteAccess) responseByteAccess->Release();
+    if (requestByteAccess) requestByteAccess->Release();
+    if (responseMessage) responseMessage->Release();
+    if (requestMessage) requestMessage->Release();
+    if (responsePacket) responsePacket->Release();
+    if (asyncop) asyncop->Release();
+    if (factory) factory->Release();
+    return hr;
+}
+
 static XodusService g_xodus_service;
 IXodusService *xodus_service = static_cast<IXodusService*>(&g_xodus_service);

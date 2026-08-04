@@ -1124,36 +1124,86 @@ static BOOL read_hex_field( HANDLE file, UCHAR *out, ULONG len )
 
 /* Fills blob with a BCRYPT_ECCPRIVATE_BLOB and imports it. Returns S_FALSE when
    no key is configured, so the caller falls back to generating one. */
+/* Decode one 64-char hex field, as read_hex_field does but from a string the
+   service handed us rather than from a file. */
+static BOOL decode_hex_field( const char *hex, UCHAR *out, ULONG len )
+{
+    ULONG i;
+
+    if (!hex || strlen( hex ) != len * 2) return FALSE;
+    for (i = 0; i < len * 2; i++)
+    {
+        char c = hex[i];
+        int v = (c >= '0' && c <= '9') ? c - '0'
+              : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+              : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+        if (v < 0) return FALSE;
+        if (i & 1) out[i / 2] |= v;
+        else out[i / 2] = v << 4;
+    }
+    return TRUE;
+}
+
+extern HRESULT xodus_request_proof_key( char **x, char **y, char **d );
+
+/* Ask the service for the key it mints with. See xodus_request_proof_key. */
+static BOOL load_xodus_proof_key( UCHAR *xyd )
+{
+    char *x = NULL, *y = NULL, *d = NULL;
+    BOOL ok;
+
+    if (FAILED(xodus_request_proof_key( &x, &y, &d ))) return FALSE;
+
+    ok = decode_hex_field( x, xyd, 32 ) &&
+         decode_hex_field( y, xyd + 32, 32 ) &&
+         decode_hex_field( d, xyd + 64, 32 );
+    if (!ok) ERR( "Xodus proof key is not three 64-char hex fields.\n" );
+
+    free( x );
+    free( y );
+    free( d );
+    return ok;
+}
+
 static HRESULT load_host_proof_key( BCRYPT_ALG_HANDLE ecdsa, BCRYPT_KEY_HANDLE *key,
                                     UCHAR *pub )
 {
     UCHAR blob[sizeof(BCRYPT_ECCKEY_BLOB) + 96];
     BCRYPT_ECCKEY_BLOB *hdr = (BCRYPT_ECCKEY_BLOB *)blob;
-    WCHAR path[MAX_PATH];
+    WCHAR path[MAX_PATH] = {};
     HANDLE file;
     NTSTATUS status;
     UCHAR *xyd = blob + sizeof(*hdr);
 
-    if (!GetEnvironmentVariableW( L"WINEGDK_PROOF_KEY", path, MAX_PATH )) return S_FALSE;
-
-    file = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
-                        FILE_ATTRIBUTE_NORMAL, NULL );
-    if (file == INVALID_HANDLE_VALUE)
+    if (!GetEnvironmentVariableW( L"WINEGDK_PROOF_KEY", path, MAX_PATH ))
     {
-        ERR( "WINEGDK_PROOF_KEY %s cannot be opened, err %lu - generating instead.\n",
-             debugstr_w(path), GetLastError() );
-        return S_FALSE;
+        /* No file named, so take the service's key. That is the normal path: it
+           needs no configuration and the two sides cannot disagree about which
+           key a token is bound to. Generating one here instead would produce
+           signatures Xbox Live rejects with nothing that says why. */
+        if (!load_xodus_proof_key( xyd )) return S_FALSE;
     }
-    if (!read_hex_field( file, xyd, 32 ) ||          /* x */
-        !read_hex_field( file, xyd + 32, 32 ) ||     /* y */
-        !read_hex_field( file, xyd + 64, 32 ))       /* d */
+    else
     {
-        ERR( "WINEGDK_PROOF_KEY %s is malformed (want 3 lines of 64 hex chars: "
-             "x, y, d) - generating instead.\n", debugstr_w(path) );
+        file = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, NULL );
+        if (file == INVALID_HANDLE_VALUE)
+        {
+            ERR( "WINEGDK_PROOF_KEY %s cannot be opened, err %lu - generating instead.\n",
+                 debugstr_w(path), GetLastError() );
+            return S_FALSE;
+        }
+        if (!read_hex_field( file, xyd, 32 ) ||          /* x */
+            !read_hex_field( file, xyd + 32, 32 ) ||     /* y */
+            !read_hex_field( file, xyd + 64, 32 ))       /* d */
+        {
+            ERR( "WINEGDK_PROOF_KEY %s is malformed (want 3 lines of 64 hex chars: "
+                 "x, y, d) - generating instead.\n", debugstr_w(path) );
+            CloseHandle( file );
+            return S_FALSE;
+        }
         CloseHandle( file );
-        return S_FALSE;
     }
-    CloseHandle( file );
 
     hdr->dwMagic = BCRYPT_ECDSA_PRIVATE_P256_MAGIC;
     hdr->cbKey = 32;
@@ -1163,12 +1213,13 @@ static HRESULT load_host_proof_key( BCRYPT_ALG_HANDLE ecdsa, BCRYPT_KEY_HANDLE *
         /* A bad d/x/y triple is rejected here rather than silently producing a
            key whose signatures never verify - which is the failure mode that is
            impossible to debug from Xbox Live's bare 401s. */
-        ERR( "WINEGDK_PROOF_KEY rejected by BCryptImportKeyPair, status %#lx - "
+        ERR( "proof key rejected by BCryptImportKeyPair, status %#lx - "
              "generating instead.\n", (long)status );
         return S_FALSE;
     }
     memcpy( pub, xyd, 64 );
-    TRACE( "using host-supplied proof key from %s.\n", debugstr_w(path) );
+    TRACE( "using the proof key supplied by %s.\n",
+           *path ? debugstr_w(path) : "the Xodus service" );
     return S_OK;
 }
 
